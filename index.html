@@ -138,6 +138,13 @@
   <a href="#level2">Úroveň 2 – Hierarchia</a>
   <a href="#level3">Úroveň 3 – Tabuľka</a>
   <a href="#level4">Úroveň 4 – Triedenie</a>
+  <div class="section-head">Kód krok po kroku</div>
+  <a href="#walk-datamodels">data_models.hpp</a>
+  <a href="#walk-analyzer">analyzer.hpp</a>
+  <a href="#walk-flowtable">flow_table.hpp</a>
+  <a href="#walk-hierarchy">ip_hierarchy.hpp</a>
+  <a href="#walk-main">main.cpp</a>
+
   <div class="section-head">Kontrola originality</div>
   <a href="#orig-predikat">Nový predikát</a>
   <a href="#orig-leftmost">Najľavejší uzol</a>
@@ -1206,6 +1213,865 @@ analyzer.<span class="fn">processData</span>(zaciatok, koniec, predikát, printR
   <div class="box box-warn">
     <strong>Prečo kópia do ImplicitSequence?</strong><br>
     QuickSort potrebuje <strong>O(1) prístup indexom</strong> (<code>is.access(i)</code>) – to SinglyLinkedSequence nepodporuje (O(n)). ImplicitSequence je pole, takže <code>access(i)</code> = O(1).
+  </div>
+
+  <!-- ===================== KOD KROK PO KROKU ===================== -->
+  <div class="section-divider"></div>
+
+  <!-- ======= DATA MODELS ======= -->
+  <h2 id="walk-datamodels">Kód krok po kroku – data_models.hpp</h2>
+  <p>Definuje tri dátové typy používané v celom projekte: <code>IP</code>, <code>FlowRecord</code>, <code>HierarchyNode</code>.</p>
+
+  <pre><code>#<span class="kw">pragma once</span>
+#<span class="kw">include</span> <span class="str">&lt;array&gt;</span>      <span class="cmt">// std::array – pre IP oktety</span>
+#<span class="kw">include</span> <span class="str">&lt;sstream&gt;</span>    <span class="cmt">// std::stringstream – parsovanie IP reťazca</span>
+#<span class="kw">include</span> <span class="str">&lt;variant&gt;</span>    <span class="cmt">// std::variant – pre HierarchyNode</span>
+#<span class="kw">include</span> <span class="str">&lt;cstdint&gt;</span>    <span class="cmt">// uint8_t, uint16_t, uint64_t</span>
+#<span class="kw">include</span> <span class="str">&lt;algorithm&gt;</span>  <span class="cmt">// std::remove – v clean() a fromString()</span>
+
+<span class="kw">namespace</span> ds::app {</code></pre>
+
+  <h3>struct IP</h3>
+  <pre><code><span class="kw">struct</span> <span class="type">IP</span> {
+    std::array&lt;uint8_t, <span class="num">4</span>&gt; octets;</code></pre>
+  <p><code>std::array&lt;uint8_t, 4&gt;</code> — pole 4 bajtov. <code>uint8_t</code> je vždy neznamienkový 0–255 (na rozdiel od <code>char</code> ktorý môže byť signed). Veľkosť je fixná v type — kompilátor nevygeneruje žiadne dynamické alokácie.</p>
+
+  <pre><code>    <span class="kw">static</span> <span class="type">IP</span> <span class="fn">fromString</span>(std::string s) {
+        s.erase(std::remove(s.begin(), s.end(), <span class="str">'\"'</span>), s.end());
+        <span class="cmt">// erase-remove idiom: zmaž úvodzovky (CSV formát)</span>
+        <span class="type">IP</span> ip{<span class="num">0</span>,<span class="num">0</span>,<span class="num">0</span>,<span class="num">0</span>};
+        std::stringstream ss(s);
+        std::string part;
+        <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">4</span>; ++i) {
+            <span class="kw">if</span> (std::getline(ss, part, <span class="str">'.'</span>))     <span class="cmt">// rozdeľ podľa '.'</span>
+                <span class="kw">try</span> { ip.octets[i] = (uint8_t)std::stoi(part); }
+                <span class="kw">catch</span>(...) {}                    <span class="cmt">// prázdne/nečíselné pole → 0</span>
+        }
+        <span class="kw">return</span> ip;
+    }</code></pre>
+  <p><code>static</code> — factory metóda, volá sa bez inštancie: <code>IP::fromString("147.32.10.5")</code>. <code>std::getline(ss, part, '.')</code> rozdeľuje reťazec podľa bodky — rovnaká funkcia ako pri čítaní riadkov, len iný delimiter.</p>
+
+  <pre><code>    <span class="kw">bool</span> <span class="fn">isInSubnet</span>(<span class="kw">const</span> <span class="type">IP</span>&amp; net, <span class="type">int</span> prefix) <span class="kw">const</span> {
+        <span class="kw">if</span> (prefix &lt;= <span class="num">0</span>) <span class="kw">return true</span>;  <span class="cmt">// prefix 0 = všetko pasuje</span>
+        <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">4</span>; ++i) {
+            <span class="type">int</span> bits = std::max(<span class="num">0</span>, std::min(<span class="num">8</span>, prefix - (i * <span class="num">8</span>)));
+            <span class="cmt">// Koľko bitov masky padá na oktet i:</span>
+            <span class="cmt">// i=0: min(8, prefix-0),  i=1: min(8, prefix-8), ...</span>
+            <span class="kw">if</span> (bits == <span class="num">0</span>) <span class="kw">break</span>;  <span class="cmt">// zvyšné oktety maska nepokrýva</span>
+            uint8_t mask = (uint8_t)(<span class="num">0xFF</span> &lt;&lt; (<span class="num">8</span> - bits));
+            <span class="cmt">// bits=8 → mask=0xFF, bits=4 → mask=0xF0, bits=0 → mask=0x00</span>
+            <span class="kw">if</span> ((octets[i] &amp; mask) != (net.octets[i] &amp; mask)) <span class="kw">return false</span>;
+        }
+        <span class="kw">return true</span>;
+    }</code></pre>
+  <div class="step-box">
+    <div class="label">Príklad: IP=147.32.10.5, sieť=147.32.0.0, prefix=16</div>
+    i=0: bits=min(8,16-0)=8 → mask=0xFF → 147&amp;0xFF==147&amp;0xFF ✓<br>
+    i=1: bits=min(8,16-8)=8 → mask=0xFF → 32&amp;0xFF==32&amp;0xFF ✓<br>
+    i=2: bits=min(8,16-16)=0 → <strong>break</strong> → return true ✓
+  </div>
+
+  <pre><code>    <span class="kw">bool</span> <span class="kw">operator</span>==(<span class="kw">const</span> <span class="type">IP</span>&amp; o) <span class="kw">const</span> = <span class="kw">default</span>;
+    <span class="cmt">// = default: kompilátor vygeneruje porovnanie member po member (octets[0]==octets[0] ...)</span>
+
+    std::string <span class="fn">toString</span>() <span class="kw">const</span> {
+        <span class="kw">return</span> std::to_string(octets[<span class="num">0</span>]) + <span class="str">"."</span> + std::to_string(octets[<span class="num">1</span>]) + <span class="str">"."</span>
+             + std::to_string(octets[<span class="num">2</span>]) + <span class="str">"."</span> + std::to_string(octets[<span class="num">3</span>]);
+    }
+    <span class="cmt">// Výsledok: "147.32.10.5" – používa sa ako kľúč v FlowSortedTable</span>
+};</code></pre>
+
+  <h3>struct FlowRecord</h3>
+  <pre><code><span class="kw">struct</span> <span class="type">FlowRecord</span> {
+    <span class="type">IP</span>       dstIp;       <span class="cmt">// cieľová IP</span>
+    <span class="type">IP</span>       srcIp;       <span class="cmt">// zdrojová IP – kľúč pre hierarchiu a tabuľku</span>
+    uint16_t dstPort;     <span class="cmt">// 0–65535, používaný v predikáte predWasAttacked</span>
+    uint16_t srcPort;
+    uint64_t bytes;       <span class="cmt">// bajty vpred – používaný v predikáte predAttackedSize</span>
+    uint64_t bytesRev;    <span class="cmt">// bajty späť</span>
+    uint64_t packets;     <span class="cmt">// pakety vpred – komparátor comparePackets</span>
+    uint64_t packetsRev;  <span class="cmt">// pakety späť – tiebreaker v comparePackets</span>
+    <span class="kw">double</span>   timeFirst;   <span class="cmt">// unix timestamp začiatku</span>
+    <span class="kw">double</span>   timeLast;    <span class="cmt">// unix timestamp konca</span>
+    <span class="kw">double</span>   duration;    <span class="cmt">// trvanie toku – komparátor compareDurations</span>
+
+    <span class="kw">bool</span> <span class="kw">operator</span>==(<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; o) <span class="kw">const</span> = <span class="kw">default</span>;
+    <span class="cmt">// = default: porovnanie všetkých 11 polí</span>
+};</code></pre>
+  <div class="box box-accent">
+    <strong>Prečo uint64_t pre bytes/packets?</strong> Sieťové toky môžu mať miliardy bajtov. <code>uint32_t</code> má max ~4 miliard (4 GB), čo môže byť málo. <code>uint64_t</code> (~18 exabytov) je bezpečné.<br><br>
+    <strong>Prečo double pre časy?</strong> Unix timestamp je počet sekúnd od 1.1.1970 — v súčasnosti ~1,7 miliardy. <code>double</code> má dostatočnú presnosť pre desatinné sekundy.
+  </div>
+
+  <h3>struct HierarchyNode</h3>
+  <pre><code><span class="kw">struct</span> <span class="type">HierarchyNode</span> {
+    std::variant&lt;uint8_t, <span class="kw">const</span> <span class="type">FlowRecord</span>*&gt; value;
+    <span class="kw">bool</span> isData = <span class="kw">false</span>;
+    <span class="kw">bool</span> <span class="kw">operator</span>==(<span class="kw">const</span> <span class="type">HierarchyNode</span>&amp;) <span class="kw">const</span> = <span class="kw">default</span>;
+
+    std::string <span class="fn">toString</span>() <span class="kw">const</span> {
+        <span class="kw">if</span> (isData) <span class="kw">return</span> <span class="str">"Zaznam ["</span> + std::get&lt;<span class="kw">const</span> <span class="type">FlowRecord</span>*&gt;(value)->srcIp.<span class="fn">toString</span>() + <span class="str">"]"</span>;
+        <span class="kw">return</span> std::to_string(std::get&lt;uint8_t&gt;(value));
+    }
+};</code></pre>
+  <p><code>std::variant&lt;uint8_t, const FlowRecord*&gt;</code> — typ ktorý môže byť buď <code>uint8_t</code> (hodnota oktetu) alebo <code>const FlowRecord*</code> (pointer na záznam). <code>std::get&lt;T&gt;(value)</code> vytiahne hodnotu konkrétneho typu — hodí výnimku ak je uložený iný typ. Táto štruktúra sa používa ako typ pre generický <code>HierarchyNode</code> z libds (ak by sme použili generický strom z libds namiesto vlastného IpHierarchyNode).</p>
+  <div class="warn-box">
+    <code>HierarchyNode</code> je v projekte definovaný, ale reálne sa <strong>nepoužíva</strong> — vlastný <code>IpHierarchyNode</code> ho nahrádza. Je to pozostatok po návrhu kde sme uvažovali o generickej hierarchii z libds.
+  </div>
+
+  <!-- ======= ANALYZER ======= -->
+  <h2 id="walk-analyzer">Kód krok po kroku – analyzer.hpp</h2>
+  <p>Celý súbor má 15 riadkov. Obsahuje jedinú triedu s jedinou metódou.</p>
+
+  <pre><code><span class="cmt">// 1. #pragma once – zabraňuje dvojitému includovaniu tohto súboru</span>
+<span class="cmt">//    Ak by sa analyzer.hpp includoval viackrát, kompilátor by ho spracoval len raz</span>
+#<span class="kw">pragma once</span>
+
+<span class="kw">namespace</span> ds::app {</code></pre>
+  <div class="box box-accent">Všetok vlastný kód projektu je v namespace <code>ds::app</code>. Zabraňuje kolíziám mien s libds (ktorá je v <code>ds::amt</code>, <code>ds::adt</code>).</div>
+
+  <pre><code>    <span class="kw">class</span> <span class="type">DataAnalyzer</span> {
+    <span class="kw">public</span>:</code></pre>
+  <p>Trieda bez dátových členov — je to len "obal" pre metódu. Mohla by byť aj voľná funkcia, ale zadanie vyžaduje triedu <code>DataAnalyzer</code>.</p>
+
+  <pre><code>        <span class="kw">template</span>&lt;<span class="kw">typename</span> Iter, <span class="kw">typename</span> Pred, <span class="kw">typename</span> Proc&gt;</code></pre>
+  <p>Tri typové parametre. Kompilátor ich odvodí automaticky z argumentov volania — nie je potrebné písať <code>processData&lt;...&gt;</code> explicitne.</p>
+  <ul>
+    <li><code>Iter</code> — typ iterátora. Môže byť <code>SinglyLinkedSequence&lt;FlowRecord&gt;::iterator</code>, <code>ImplicitSequence&lt;FlowRecord&gt;::iterator</code>, alebo <code>IpRecordIterator</code>.</li>
+    <li><code>Pred</code> — typ predikátu. Lambda, funktor, alebo <code>std::function&lt;bool(const FlowRecord&)&gt;</code>.</li>
+    <li><code>Proc</code> — typ procesora. Lambda ktorá vypisuje alebo vkladá záznam.</li>
+  </ul>
+
+  <pre><code>        <span class="kw">void</span> <span class="fn">processData</span>(Iter begin, Iter end, Pred predicate, Proc processor) {
+            <span class="kw">for</span> (<span class="kw">auto</span> it = begin; it != end; ++it) {</code></pre>
+  <p><code>it = begin</code> — začneme na prvom prvku. <code>it != end</code> — pokračujeme kým nenarazíme na sentinel konca. <code>++it</code> — posun na ďalší prvok. Toto funguje lebo každý iterátor v projekte implementuje <code>operator!=</code> a <code>operator++</code>.</p>
+
+  <pre><code>                <span class="kw">if</span> (<span class="fn">predicate</span>(*it)) {    <span class="cmt">// *it dereferencuje iterátor → FlowRecord&</span>
+                    <span class="fn">processor</span>(*it);       <span class="cmt">// spracuj záznam (výpis alebo vloženie)</span>
+                }
+            }
+        }
+    };
+}</code></pre>
+  <div class="box box-ok"><code>*it</code> volá <code>operator*</code> na iterátore — vráti referenciu na <code>FlowRecord</code>. Predikát dostane <code>const FlowRecord&</code> (len číta), procesor tiež <code>const FlowRecord&</code> (len číta, ale môže meniť zachytené premenné cez closure).</div>
+
+  <!-- ======= FLOW TABLE ======= -->
+  <h2 id="walk-flowtable">Kód krok po kroku – flow_table.hpp</h2>
+
+  <pre><code>#<span class="kw">pragma once</span>
+#<span class="kw">include</span> <span class="str">&lt;libds/adt/table.hpp&gt;</span>        <span class="cmt">// SortedSequenceTable</span>
+#<span class="kw">include</span> <span class="str">&lt;libds/amt/explicit_sequence.hpp&gt;</span>  <span class="cmt">// SinglyLinkedSequence</span>
+#<span class="kw">include</span> <span class="str">"data_models.hpp"</span>             <span class="cmt">// FlowRecord</span>
+
+<span class="kw">namespace</span> ds::app {</code></pre>
+
+  <pre><code><span class="kw">using</span> <span class="type">FlowList</span> = ds::amt::<span class="type">SinglyLinkedSequence</span>&lt;<span class="kw">const</span> <span class="type">FlowRecord</span>*&gt;;</code></pre>
+  <p>Type alias — <code>FlowList</code> je skrátený zápis pre <code>SinglyLinkedSequence&lt;const FlowRecord*&gt;</code>. Každá unikátna zdrojová IP má jeden <code>FlowList</code> — zoznam pointerov na všetky jej toky.</p>
+
+  <pre><code><span class="kw">class</span> <span class="type">FlowSortedTable</span> : <span class="kw">public</span> ds::adt::<span class="type">SortedSequenceTable</span>&lt;std::string, <span class="type">FlowList</span>*&gt; {</code></pre>
+  <p>Verejná dedičnosť — <code>FlowSortedTable</code> <em>je</em> <code>SortedSequenceTable</code> s kľúčom <code>std::string</code> (IP ako text) a hodnotou <code>FlowList*</code> (pointer na dynamicky alokovaný zoznam).</p>
+
+  <pre><code><span class="kw">public</span>:
+    <span class="type">FlowSortedTable</span>()                                  = <span class="kw">default</span>;
+    <span class="type">FlowSortedTable</span>(<span class="kw">const</span> <span class="type">FlowSortedTable</span>&amp;)            = <span class="kw">delete</span>;
+    <span class="type">FlowSortedTable</span>&amp; <span class="kw">operator</span>=(<span class="kw">const</span> <span class="type">FlowSortedTable</span>&amp;) = <span class="kw">delete</span>;</code></pre>
+  <p>Kopírovanie zakázané — tabuľka vlastní dynamicky alokované <code>FlowList*</code>. Kópia by zdieľala rovnaké pointre, a <code>delete</code> pri deštrukcii by ich mazal dvakrát (double-free). <code>= default</code> na konštruktore hovorí "použi to čo by kompilátor vygeneroval sám".</p>
+
+  <pre><code>    ~<span class="type">FlowSortedTable</span>() {
+        <span class="kw">for</span> (<span class="kw">auto</span>&amp; item : *<span class="kw">this</span>) {  <span class="cmt">// iteruje cez všetky páry (kľúč, FlowList*)</span>
+            <span class="kw">delete</span> item.data;          <span class="cmt">// item.data je FlowList* — uvoľni zoznam</span>
+        }
+    }</code></pre>
+  <p><code>for (auto& item : *this)</code> — range-for na samotnej tabuľke. <code>*this</code> = dereferencia seba samého = tabuľka. Každé <code>item</code> je <code>TableItem&lt;string, FlowList*&gt;</code> s poľami <code>key</code> a <code>data</code>. Mazáme <code>item.data</code> (FlowList*), nie <code>item.key</code> (string sa destruktuje sám).</p>
+
+  <pre><code>    <span class="kw">void</span> <span class="fn">insertFlow</span>(<span class="kw">const</span> <span class="type">FlowRecord</span>* rec) {
+        <span class="kw">const</span> std::string key = rec->srcIp.<span class="fn">toString</span>();  <span class="cmt">// "147.32.84.165"</span></code></pre>
+  <p>Kľúč je reťazcová reprezentácia zdrojovej IP. Prečo reťazec a nie <code>IP</code> struct? <code>SortedSequenceTable</code> vyžaduje kľúč s <code>operator&lt;</code> — string ho má, <code>IP</code> struct nie.</p>
+
+  <pre><code>        <span class="type">FlowList</span>** listPtr = <span class="kw">nullptr</span>;
+        <span class="kw">if</span> (<span class="kw">this</span>-><span class="fn">tryFind</span>(key, listPtr)) {</code></pre>
+  <p><code>FlowList**</code> — pointer na pointer. <code>tryFind</code> nastaví <code>listPtr</code> tak, aby <code>*listPtr</code> ukazoval priamo na hodnotu v tabuľkovom slote. Ak by sme mali len <code>FlowList*</code>, mali by sme kópiu — pridávanie by nemenilo tabuľku.</p>
+
+  <pre><code>            (*listPtr)-><span class="fn">emplaceLast</span>().data = rec;  <span class="cmt">// kľúč existuje → pridaj do zoznamu</span>
+        } <span class="kw">else</span> {
+            <span class="type">FlowList</span>* newList = <span class="kw">new</span> <span class="type">FlowList</span>();       <span class="cmt">// nová IP → nový zoznam</span>
+            newList-><span class="fn">emplaceLast</span>().data = rec;
+            <span class="kw">this</span>-><span class="fn">insert</span>(key, newList);               <span class="cmt">// O(n) – posun prvkov</span>
+        }
+    }
+};</code></pre>
+  <div class="box box-ok">Každý <code>new FlowList()</code> tu má zodpovedajúci <code>delete item.data</code> v destruktore. Žiaden leak.</div>
+
+  <!-- ======= IP HIERARCHY ======= -->
+  <h2 id="walk-hierarchy">Kód krok po kroku – ip_hierarchy.hpp</h2>
+
+  <h3>IpHierarchyNode</h3>
+  <pre><code><span class="kw">struct</span> <span class="type">IpHierarchyNode</span> {
+    <span class="type">int</span>     level      = <span class="num">0</span>;   <span class="cmt">// 0=koreň, 1–3=vnútorný, 4=list</span>
+    uint8_t octetValue = <span class="num">0</span>;   <span class="cmt">// hodnota tohto oktetu (0–255)</span>
+    <span class="type">IpHierarchyNode</span>* parent = <span class="kw">nullptr</span>;  <span class="cmt">// ukazovateľ nahor (koreň má nullptr)</span>
+
+    ds::amt::<span class="type">ImplicitSequence</span>&lt;<span class="type">IpHierarchyNode</span>*&gt;      children;
+    <span class="cmt">// ↑ pole 256 slotov – index = hodnota oktetu, slot = pointer na syna</span>
+    <span class="cmt">//   len u vnútorných uzlov (level &lt; 4), listy children vôbec nemajú</span>
+
+    ds::amt::<span class="type">SinglyLinkedSequence</span>&lt;<span class="kw">const</span> <span class="type">FlowRecord</span>*&gt; records;
+    <span class="cmt">// ↑ zoznam pointerov na záznamy – len v listoch (level == 4)</span></code></pre>
+
+  <pre><code>    <span class="type">IpHierarchyNode</span>(<span class="type">int</span> lvl = <span class="num">0</span>, uint8_t val = <span class="num">0</span>, <span class="type">IpHierarchyNode</span>* par = <span class="kw">nullptr</span>)
+        : level(lvl), octetValue(val), parent(par)
+    {
+        <span class="kw">if</span> (lvl &lt; <span class="num">4</span>) {                        <span class="cmt">// listy children nepotrebujú</span>
+            <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">256</span>; i++)
+                children.<span class="fn">emplaceLast</span>().data = <span class="kw">nullptr</span>;  <span class="cmt">// 256 prázdnych slotov</span>
+        }
+    }</code></pre>
+  <p>Inicializačný zoznam <code>: level(lvl), ...</code> priradí hodnoty pred telom konštruktora. <code>for</code> naplní <code>children</code> 256-krát <code>nullptr</code> — každý slot zodpovedá jednej možnej hodnote oktetu.</p>
+
+  <pre><code>    ~<span class="type">IpHierarchyNode</span>() {
+        <span class="kw">if</span> (!<span class="fn">isLeaf</span>()) {                      <span class="cmt">// listy nemajú deti</span>
+            <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">256</span>; i++) {
+                <span class="kw">auto</span>* b = children.<span class="fn">access</span>(i);
+                <span class="kw">if</span> (b &amp;&amp; b->data) {
+                    <span class="kw">delete</span> b->data;   <span class="cmt">// zavolá ~IpHierarchyNode() syna → rekurzia</span>
+                    b->data = <span class="kw">nullptr</span>;
+                }
+            }
+        }
+        <span class="cmt">// children (ImplicitSequence) a records (SinglyLinkedSequence)</span>
+        <span class="cmt">// sa destruktujú automaticky ako dátové členy</span>
+    }</code></pre>
+  <div class="box box-accent"><code>delete b->data</code> zavolá destruktor syna, ten zavolá destruktory jeho synov atď. — celý podstrom sa vyčistí rekurzívne bez explicitného DFS. <code>b->data = nullptr</code> po delete je dobrý zvyk (ochrana pred double-free ak by sa destruktor omylom zavolal dvakrát).</div>
+
+  <pre><code>    <span class="type">IpHierarchyNode</span>(<span class="kw">const</span> <span class="type">IpHierarchyNode</span>&amp;)            = <span class="kw">delete</span>;
+    <span class="type">IpHierarchyNode</span>&amp; <span class="kw">operator</span>=(<span class="kw">const</span> <span class="type">IpHierarchyNode</span>&amp;) = <span class="kw">delete</span>;
+    <span class="cmt">// Kopírovanie zakázané – uzol vlastní dynamicky alokovaných synov</span>
+
+    <span class="kw">bool</span> <span class="fn">isRoot</span>() <span class="kw">const</span> { <span class="kw">return</span> level == <span class="num">0</span>; }
+    <span class="kw">bool</span> <span class="fn">isLeaf</span>() <span class="kw">const</span> { <span class="kw">return</span> level == <span class="num">4</span>; }</code></pre>
+
+  <pre><code>    <span class="type">IpHierarchyNode</span>* <span class="fn">getOrCreateChild</span>(uint8_t octet) {
+        <span class="kw">auto</span>* b = children.<span class="fn">access</span>(octet);  <span class="cmt">// O(1) – slot č. octet</span>
+        <span class="kw">if</span> (b->data) <span class="kw">return</span> b->data;        <span class="cmt">// syn existuje</span>
+        b->data = <span class="kw">new</span> <span class="type">IpHierarchyNode</span>(level + <span class="num">1</span>, octet, <span class="kw">this</span>);
+        <span class="kw">return</span> b->data;                     <span class="cmt">// nový syn</span>
+    }
+};</code></pre>
+
+  <h3>IpHierarchy</h3>
+  <pre><code><span class="kw">class</span> <span class="type">IpHierarchy</span> {
+<span class="kw">public</span>:
+    <span class="type">IpHierarchy</span>()  : root_(<span class="kw">new</span> <span class="type">IpHierarchyNode</span>()) {}
+    <span class="cmt">// Konštruktor alokuje koreňový uzol (level=0, val=0, parent=nullptr)</span>
+
+    ~<span class="type">IpHierarchy</span>() { <span class="kw">delete</span> root_; }
+    <span class="cmt">// delete root_ → ~IpHierarchyNode() → rekurzívne zmaže celý strom</span></code></pre>
+
+  <pre><code>    <span class="kw">void</span> <span class="fn">insert</span>(<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; rec) {
+        <span class="type">IpHierarchyNode</span>* cur = root_;
+        <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">4</span>; ++i)
+            cur = cur-><span class="fn">getOrCreateChild</span>(rec.srcIp.octets[i]);
+        <span class="cmt">// Po 4 iteráciách: cur = list zodpovedajúci srcIp</span>
+        cur->records.<span class="fn">emplaceLast</span>().data = &amp;rec;  <span class="cmt">// uloží pointer, nie kópiu</span>
+    }
+
+    <span class="type">IpHierarchyNode</span>* <span class="fn">root</span>() { <span class="kw">return</span> root_; }
+<span class="kw">private</span>:
+    <span class="type">IpHierarchyNode</span>* root_;
+};</code></pre>
+
+  <h3>IpHierarchyIterator</h3>
+  <pre><code><span class="kw">class</span> <span class="type">IpHierarchyIterator</span> {
+<span class="kw">public</span>:
+    <span class="kw">explicit</span> <span class="type">IpHierarchyIterator</span>(<span class="type">IpHierarchyNode</span>* node) : current_(node) {}
+    <span class="cmt">// explicit – zabraňuje implicitnej konverzii IpHierarchyNode* → IpHierarchyIterator</span>
+
+    <span class="type">IpHierarchyNode</span>* <span class="fn">current</span>() <span class="kw">const</span> { <span class="kw">return</span> current_; }
+
+    <span class="kw">bool</span> <span class="fn">moveUp</span>() {
+        <span class="kw">if</span> (!current_ || current_-><span class="fn">isRoot</span>()) <span class="kw">return false</span>;
+        current_ = current_->parent;   <span class="cmt">// stačí nastaviť parent pointer</span>
+        <span class="kw">return true</span>;
+    }
+
+    <span class="kw">bool</span> <span class="fn">moveToChild</span>(uint8_t octetValue) {
+        <span class="kw">if</span> (!current_ || current_-><span class="fn">isLeaf</span>()) <span class="kw">return false</span>;
+        <span class="kw">auto</span>* b = current_->children.<span class="fn">access</span>(octetValue);  <span class="cmt">// O(1)</span>
+        <span class="kw">if</span> (!b || !b->data) <span class="kw">return false</span>;  <span class="cmt">// syn neexistuje</span>
+        current_ = b->data;
+        <span class="kw">return true</span>;
+    }
+<span class="kw">private</span>:
+    <span class="type">IpHierarchyNode</span>* current_ = <span class="kw">nullptr</span>;
+};</code></pre>
+  <p>Jednoduchý navigačný iterátor. Drží len jeden pointer. <code>moveUp</code> a <code>moveToChild</code> ho posunú — vracajú <code>bool</code>, aby volajúci kód vedel, či sa pohyb podaril.</p>
+
+  <h3>SubtreeDfsIterator</h3>
+  <pre><code><span class="kw">class</span> <span class="type">SubtreeDfsIterator</span> {
+<span class="kw">public</span>:
+    <span class="type">SubtreeDfsIterator</span>() : subtreeRoot_(<span class="kw">nullptr</span>), current_(<span class="kw">nullptr</span>) {}
+    <span class="cmt">// Defaultný konštruktor = "null" iterátor (sentinel konca)</span>
+
+    <span class="kw">explicit</span> <span class="type">SubtreeDfsIterator</span>(<span class="type">IpHierarchyNode</span>* subtreeRoot)
+        : subtreeRoot_(subtreeRoot), current_(subtreeRoot) {}
+    <span class="cmt">// Začíname priamo v zadanom uzle (preorder – uzol pred potomkami)</span></code></pre>
+
+  <pre><code>    <span class="type">SubtreeDfsIterator</span>&amp; <span class="kw">operator</span>++() {
+        <span class="kw">if</span> (!current_) <span class="kw">return</span> *<span class="kw">this</span>;
+
+        <span class="cmt">// 1. Pokús sa ísť do prvého syna</span>
+        <span class="kw">if</span> (!current_-><span class="fn">isLeaf</span>()) {
+            <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">256</span>; i++) {
+                <span class="kw">auto</span>* b = current_->children.<span class="fn">access</span>(i);
+                <span class="kw">if</span> (b &amp;&amp; b->data) { current_ = b->data; <span class="kw">return</span> *<span class="kw">this</span>; }
+            }
+        }
+
+        <span class="cmt">// 2. Ak nemáme syna: hľadaj ďalšieho súrodenca, potom strýka atď.</span>
+        <span class="kw">while</span> (current_ != subtreeRoot_) {
+            <span class="type">IpHierarchyNode</span>* par = current_->parent;
+            <span class="kw">for</span> (<span class="type">int</span> i = (<span class="type">int</span>)current_->octetValue + <span class="num">1</span>; i &lt; <span class="num">256</span>; i++) {
+                <span class="kw">auto</span>* b = par->children.<span class="fn">access</span>(i);
+                <span class="kw">if</span> (b &amp;&amp; b->data) { current_ = b->data; <span class="kw">return</span> *<span class="kw">this</span>; }
+            }
+            current_ = par;  <span class="cmt">// žiadny súrodenec → krok nahor</span>
+        }
+
+        current_ = <span class="kw">nullptr</span>;  <span class="cmt">// prešli sme celý podstrom → koniec</span>
+        <span class="kw">return</span> *<span class="kw">this</span>;
+    }
+};</code></pre>
+  <div class="box box-accent"><code>current_->octetValue + 1</code> — hľadáme súrodencov s <em>väčšou</em> hodnotou oktetu (tie ešte neboli navštívené). <code>while (current_ != subtreeRoot_)</code> — neprekročíme koreň podstromu, neopustíme ho.</div>
+
+  <h3>IpRecordIterator</h3>
+  <pre><code><span class="kw">using</span> <span class="type">RecordBlock</span> = ds::amt::<span class="type">SinglyLinkedSequenceBlock</span>&lt;<span class="kw">const</span> <span class="type">FlowRecord</span>*&gt;;
+<span class="cmt">// Type alias pre blok SinglyLinkedSequence – skracuje zápis</span>
+
+<span class="kw">class</span> <span class="type">IpRecordIterator</span> {
+<span class="kw">public</span>:
+    <span class="type">IpRecordIterator</span>() : nodeIt_(), recBlock_(<span class="kw">nullptr</span>) {}
+    <span class="cmt">// Defaultný konštruktor = null iterator (end sentinel)</span>
+
+    <span class="kw">explicit</span> <span class="type">IpRecordIterator</span>(<span class="type">IpHierarchyNode</span>* subtreeRoot)
+        : nodeIt_(subtreeRoot), recBlock_(<span class="kw">nullptr</span>)
+    {
+        <span class="fn">skipToNextRecord</span>();  <span class="cmt">// posuň sa na prvý neprázdny list</span>
+    }</code></pre>
+
+  <pre><code>    <span class="kw">const</span> <span class="type">FlowRecord</span>&amp; <span class="kw">operator</span>*()  <span class="kw">const</span> { <span class="kw">return</span> *recBlock_->data; }
+    <span class="cmt">// recBlock_->data je const FlowRecord* → * ho dereferencuje na FlowRecord&</span>
+
+    <span class="type">IpRecordIterator</span>&amp; <span class="kw">operator</span>++() {
+        recBlock_ = nodeIt_.<span class="fn">current</span>()->records.<span class="fn">accessNext</span>(*recBlock_);
+        <span class="cmt">// Pokús sa posunúť na ďalší záznam v tom istom liste</span>
+        <span class="kw">if</span> (!recBlock_) {      <span class="cmt">// koniec záznamov v tomto liste</span>
+            ++nodeIt_;         <span class="cmt">// skok na ďalší uzol cez DFS</span>
+            <span class="fn">skipToNextRecord</span>(); <span class="cmt">// preskočí prázdne listy</span>
+        }
+        <span class="kw">return</span> *<span class="kw">this</span>;
+    }</code></pre>
+
+  <pre><code><span class="kw">private</span>:
+    <span class="kw">void</span> <span class="fn">skipToNextRecord</span>() {
+        <span class="kw">while</span> (!nodeIt_.<span class="fn">isNull</span>() &amp;&amp; nodeIt_.<span class="fn">current</span>()->records.<span class="fn">isEmpty</span>())
+            ++nodeIt_;  <span class="cmt">// preskočíme uzly bez záznamov (vnútorné uzly)</span>
+        recBlock_ = nodeIt_.<span class="fn">isNull</span>() ? <span class="kw">nullptr</span>
+                                      : nodeIt_.<span class="fn">current</span>()->records.<span class="fn">accessFirst</span>();
+    }
+
+    <span class="type">SubtreeDfsIterator</span> nodeIt_;    <span class="cmt">// iterátor cez uzly</span>
+    <span class="type">RecordBlock</span>*       recBlock_;  <span class="cmt">// aktuálny záznam v aktuálnom liste</span>
+};</code></pre>
+  <div class="box box-ok"><code>processData</code> vidí IpRecordIterator rovnako ako hocijaký iný iterátor — volá <code>++</code>, <code>*</code>, <code>!=</code>. Nevie, že vnútri sa striedajú DFS skoky medzi uzlami a lineárny prechod cez záznamy v listoch.</div>
+
+  <!-- ======= MAIN ======= -->
+  <h2 id="walk-main">Kód krok po kroku – main.cpp</h2>
+  <p>Hlavný súbor programu. Obsahuje načítavanie dát, pomocné funkcie a logiku všetkých 4 úrovní.</p>
+
+  <!-- INCLUDES -->
+  <h3>Includes a using (riadky 1–17)</h3>
+  <pre><code>#<span class="kw">include</span> <span class="str">&lt;iostream&gt;</span>   <span class="cmt">// std::cout, std::cin</span>
+#<span class="kw">include</span> <span class="str">&lt;fstream&gt;</span>    <span class="cmt">// std::ifstream – čítanie CSV súboru</span>
+#<span class="kw">include</span> <span class="str">&lt;sstream&gt;</span>    <span class="cmt">// std::stringstream – rozdeľovanie riadku podľa ','</span>
+#<span class="kw">include</span> <span class="str">&lt;iomanip&gt;</span>    <span class="cmt">// std::fixed, std::setprecision – formátovanie výpisu duration</span>
+#<span class="kw">include</span> <span class="str">&lt;algorithm&gt;</span>  <span class="cmt">// std::remove – erase-remove idiom v clean()</span>
+#<span class="kw">include</span> <span class="str">"data_models.hpp"</span>
+#<span class="kw">include</span> <span class="str">"analyzer.hpp"</span>
+#<span class="kw">include</span> <span class="str">"ip_hierarchy.hpp"</span>
+#<span class="kw">include</span> <span class="str">"flow_table.hpp"</span>
+#<span class="kw">include</span> <span class="str">&lt;libds/amt/explicit_sequence.hpp&gt;</span>  <span class="cmt">// SinglyLinkedSequence + iterátor</span>
+#<span class="kw">include</span> <span class="str">&lt;libds/amt/implicit_sequence.hpp&gt;</span>  <span class="cmt">// ImplicitSequence + iterátor</span>
+#<span class="kw">include</span> <span class="str">&lt;libds/adt/sorts.hpp&gt;</span>             <span class="cmt">// QuickSort</span>
+
+<span class="kw">using namespace</span> ds::app;
+<span class="cmt">// Sprístupní: IP, FlowRecord, IpHierarchy, IpHierarchyIterator,</span>
+<span class="cmt">//             IpRecordIterator, FlowSortedTable, FlowList, DataAnalyzer</span>
+
+<span class="kw">using namespace</span> ds::amt;
+<span class="cmt">// Sprístupní: SinglyLinkedSequence, ImplicitSequence (bez ds::amt:: prefixu)</span></code></pre>
+
+  <!-- CLEAN -->
+  <h3>clean() – riadky 20–24</h3>
+  <pre><code>std::string <span class="fn">clean</span>(std::string s) {
+    s.erase(std::remove(s.begin(), s.end(), <span class="str">'\"'</span>), s.end());
+    s.erase(std::remove(s.begin(), s.end(), <span class="str">'\r'</span>), s.end());
+    <span class="kw">return</span> s;
+}</code></pre>
+  <p>Pomocná funkcia pre čistenie CSV hodnôt. Berie reťazec <strong>hodnotou</strong> (vlastná kópia), modifikuje ju a vráti.</p>
+  <ul>
+    <li><code>std::remove(begin, end, znak)</code> — presunie všetky výskyty <code>znak</code> na koniec rozsahu a vráti iterator za posledný platný prvok. Samotné <code>remove</code> nič nevymaže.</li>
+    <li><code>s.erase(it, s.end())</code> — reálne vymaže zvyšok za iterátorom. Kombinácia = <strong>erase-remove idiom</strong>.</li>
+    <li>Prvý volanie zmaže úvodzovky <code>"</code> (CSV hodnoty môžu byť <code>"147.32.0.1"</code>), druhé zmaže <code>\r</code> (Windows konce riadkov <code>\r\n</code>).</li>
+  </ul>
+
+  <!-- LOADDATA -->
+  <h3>loadData() – riadky 26–104</h3>
+  <p>Jediná funkcia, ktorá číta zo súboru. Naplní všetky tri dátové štruktúry jedným prechodom.</p>
+
+  <pre><code><span class="kw">void</span> <span class="fn">loadData</span>(<span class="type">SinglyLinkedSequence</span>&lt;<span class="type">FlowRecord</span>&gt;&amp; data,
+              <span class="type">IpHierarchy</span>&amp; hierarchy,
+              <span class="type">FlowSortedTable</span>&amp; flowTable) {</code></pre>
+  <p>Všetky tri parametre sú <strong>referencie</strong> — funkcia mení originálne objekty z <code>main()</code>, nevytvára kópie.</p>
+
+  <pre><code>    std::ifstream file(<span class="str">"../semestral_project/data/botnet_multiclass.csv"</span>);
+    <span class="kw">if</span> (!file.is_open()) {
+        std::cout &lt;&lt; <span class="str">"Subor sa nepodarilo otvorit!"</span> &lt;&lt; std::endl;
+        <span class="kw">return</span>;
+    }</code></pre>
+  <p><code>std::ifstream</code> — vstupný súborový prúd. <code>!file.is_open()</code> — ak súbor neexistuje alebo nie je prístupný. Cesta <code>../semestral_project/data/</code> je relatívna od miesta spustenia (build adresár).</p>
+
+  <pre><code>    <span class="cmt">// ── Fáza 1: načítanie hlavičky ──────────────────────────────────────</span>
+    std::string line;
+    std::getline(file, line);  <span class="cmt">// prečítaj prvý riadok (hlavička)</span>
+
+    <span class="type">SinglyLinkedSequence</span>&lt;std::string&gt; colNames;
+    {
+        std::stringstream ssHeader(line);
+        std::string col;
+        <span class="kw">while</span> (std::getline(ssHeader, col, <span class="str">','</span>))
+            colNames.<span class="fn">emplaceLast</span>().data = <span class="fn">clean</span>(col);
+    }
+    <span class="cmt">// colNames teraz obsahuje: ["DST_IP", "SRC_IP", "DST_PORT", ...]</span>
+    <span class="cmt">// poradie závisí od CSV, nemusíme ho poznať</span></code></pre>
+  <p>Blok <code>{ }</code> okolo parsingu hlavičky obmedzuje životnosť <code>ssHeader</code> a <code>col</code> — po bloku zanikajú. <code>std::getline(ss, col, ',')</code> číta zo stringstreamu až po <code>','</code>, čím rozdeľuje CSV riadok na stĺpce.</p>
+
+  <pre><code>    <span class="kw">auto</span> colIdx = [&amp;](<span class="kw">const</span> std::string&amp; name) -&gt; <span class="type">int</span> {
+        <span class="type">int</span> i = <span class="num">0</span>;
+        <span class="kw">auto</span>* b = colNames.<span class="fn">accessFirst</span>();
+        <span class="kw">while</span> (b) {
+            <span class="kw">if</span> (b->data == name) <span class="kw">return</span> i;
+            b = colNames.<span class="fn">accessNext</span>(*b);
+            i++;
+        }
+        <span class="kw">return</span> -<span class="num">1</span>;
+    };</code></pre>
+  <p>Lambda zachytáva <code>colNames</code> referenciou (<code>[&]</code>). Prechádza zoznam názvov stĺpcov pomocou <code>accessFirst</code>/<code>accessNext</code> a vráti index prvého zhody. Vráti <code>-1</code> ak stĺpec neexistuje.</p>
+
+  <pre><code>    <span class="type">int</span> iDst        = colIdx(<span class="str">"DST_IP"</span>);
+    <span class="type">int</span> iSrc        = colIdx(<span class="str">"SRC_IP"</span>);
+    <span class="type">int</span> iDstPort    = colIdx(<span class="str">"DST_PORT"</span>);
+    <span class="type">int</span> iSrcPort    = colIdx(<span class="str">"SRC_PORT"</span>);
+    <span class="type">int</span> iBytes      = colIdx(<span class="str">"BYTES"</span>);
+    <span class="type">int</span> iPackets    = colIdx(<span class="str">"PACKETS"</span>);
+    <span class="type">int</span> iPacketsRev = colIdx(<span class="str">"PACKETS_REV"</span>);
+    <span class="type">int</span> iBytesRev   = colIdx(<span class="str">"BYTES_REV"</span>);
+    <span class="type">int</span> iTimeFirst  = colIdx(<span class="str">"TIME_FIRST"</span>);
+    <span class="type">int</span> iTimeLast   = colIdx(<span class="str">"TIME_LAST"</span>);
+    <span class="type">int</span> iDuration   = colIdx(<span class="str">"DURATION"</span>);</code></pre>
+  <p>Indexy sa vypočítajú raz pred smyčkou. V smyčke sa potom používa rýchly <code>row.at(iSrc)</code> namiesto pomalého hľadania podľa názvu pri každom riadku.</p>
+
+  <pre><code>    <span class="cmt">// ── Fáza 2: hlavná smyčka ───────────────────────────────────────────</span>
+    std::cout &lt;&lt; <span class="str">"Nacitavam data zo suboru..."</span> &lt;&lt; std::endl;
+
+    <span class="kw">while</span> (std::getline(file, line)) {
+        <span class="kw">if</span> (line.empty()) <span class="kw">continue</span>;  <span class="cmt">// preskočiť prázdne riadky</span>
+
+        std::stringstream ss(line);
+        std::vector&lt;std::string&gt; row;
+        std::string cell;
+        <span class="kw">while</span> (std::getline(ss, cell, <span class="str">','</span>))
+            row.push_back(cell);
+        <span class="cmt">// row je std::vector – dočasné úložisko stĺpcov aktuálneho riadku</span></code></pre>
+  <p><code>std::vector</code> sa tu používa len ako dočasný buffer pre jeden riadok — nie je to súčasť dlhodobého úložiska. Po spracovaní riadku zanikne.</p>
+
+  <pre><code>        <span class="kw">try</span> {
+            <span class="kw">auto</span>&amp; block = data.<span class="fn">emplaceLast</span>();
+            <span class="cmt">// emplaceLast() alokuje nový blok v SinglyLinkedSequence</span>
+            <span class="cmt">// a vráti REFERENCIU na ten blok</span>
+            <span class="cmt">// MUSÍ byť auto& – kópia by bola pointer na zásobník</span>
+
+            block.data.dstIp      = IP::<span class="fn">fromString</span>(row.at(iDst));
+            block.data.srcIp      = IP::<span class="fn">fromString</span>(row.at(iSrc));
+            block.data.dstPort    = (uint16_t)std::stoi(<span class="fn">clean</span>(row.at(iDstPort)));
+            block.data.srcPort    = (uint16_t)std::stoi(<span class="fn">clean</span>(row.at(iSrcPort)));
+            block.data.bytes      = std::stoull(<span class="fn">clean</span>(row.at(iBytes)));
+            block.data.bytesRev   = std::stoull(<span class="fn">clean</span>(row.at(iBytesRev)));
+            block.data.packets    = std::stoull(<span class="fn">clean</span>(row.at(iPackets)));
+            block.data.packetsRev = std::stoull(<span class="fn">clean</span>(row.at(iPacketsRev)));
+            block.data.timeFirst  = std::stod(<span class="fn">clean</span>(row.at(iTimeFirst)));
+            block.data.timeLast   = std::stod(<span class="fn">clean</span>(row.at(iTimeLast)));
+            block.data.duration   = std::stod(<span class="fn">clean</span>(row.at(iDuration)));</code></pre>
+  <div class="box box-accent">
+    Konverzné funkcie: <code>std::stoi</code> → int, <code>std::stoull</code> → uint64_t (unsigned long long), <code>std::stod</code> → double.<br>
+    <code>row.at(i)</code> — bezpečný prístup s kontrolou rozsahu (hodí výnimku ak index mimo rozsah). To je dôvod prečo obalíme celý blok v <code>try/catch</code>.
+  </div>
+
+  <pre><code>            hierarchy.<span class="fn">insert</span>(block.data);
+            <span class="cmt">// Prejde 4 oktety srcIp, vytvorí uzly ak neexistujú,</span>
+            <span class="cmt">// do listu vloží &block.data (pointer na FlowRecord v zozname)</span>
+
+            flowTable.<span class="fn">insertFlow</span>(&amp;block.data);
+            <span class="cmt">// Kľúč = block.data.srcIp.toString()</span>
+            <span class="cmt">// Ak kľúč existuje: pridaj do existujúceho FlowList</span>
+            <span class="cmt">// Ak nie: new FlowList, insert do tabuľky O(n)</span>
+
+        } <span class="kw">catch</span> (...) {
+            data.<span class="fn">removeLast</span>();
+            <span class="cmt">// Výnimka nastala počas parsingu alebo row.at() – záznam je neúplný</span>
+            <span class="cmt">// removeLast() je bezpečné: hierarchy ani flowTable ešte nedostali pointer</span>
+            <span class="cmt">// (výnimka nastala pred ich volaním)</span>
+            <span class="kw">continue</span>;
+        }
+    }
+
+    std::cout &lt;&lt; <span class="str">"Hotovo! Nacitanych "</span> &lt;&lt; data.<span class="fn">size</span>() &lt;&lt; <span class="str">" zaznamov."</span> &lt;&lt; std::endl;
+}</code></pre>
+
+  <!-- PRINTRECORD -->
+  <h3>printRecord() – riadky 106–111</h3>
+  <pre><code><span class="kw">void</span> <span class="fn">printRecord</span>(<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r, <span class="type">int</span>&amp; count) {
+    count++;
+    std::cout &lt;&lt; r.srcIp.<span class="fn">toString</span>() &lt;&lt; <span class="str">" -> "</span> &lt;&lt; r.dstIp.<span class="fn">toString</span>()
+              &lt;&lt; <span class="str">"  port: "</span> &lt;&lt; r.dstPort
+              &lt;&lt; <span class="str">"  bajty: "</span> &lt;&lt; r.bytes &lt;&lt; std::endl;
+}</code></pre>
+  <p><code>count</code> je referencia — funkcia mení počítadlo volajúceho. Používa sa ako procesor v <code>processData</code> cez lambdu <code>[&amp;count](const FlowRecord& r) { printRecord(r, count); }</code>. Samotný <code>printRecord</code> nie je lambda — je to normálna funkcia, lambda ho len obaluje a zachytáva <code>count</code>.</p>
+
+  <!-- RUNLEVEL1 -->
+  <h3>runLevel1() – riadky 113–183</h3>
+  <pre><code><span class="kw">void</span> <span class="fn">runLevel1</span>(<span class="type">SinglyLinkedSequence</span>&lt;<span class="type">FlowRecord</span>&gt;&amp; data) {
+    <span class="type">DataAnalyzer</span> analyzer;
+    <span class="type">int</span> choice = -<span class="num">1</span>;
+
+    <span class="kw">while</span> (choice != <span class="num">0</span>) {
+        <span class="cmt">// Vypíš menu, načítaj choice</span>
+        <span class="type">int</span> count = <span class="num">0</span>;  <span class="cmt">// resetuje sa pri každom filtri</span></code></pre>
+
+  <pre><code>        <span class="kw">if</span> (choice == <span class="num">1</span>) {
+            <span class="cmt">// predTrue – vypíš všetko</span>
+            analyzer.<span class="fn">processData</span>(
+                data.<span class="fn">begin</span>(), data.<span class="fn">end</span>(),
+                [](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) { <span class="kw">return true</span>; },
+                [&amp;count](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) { <span class="fn">printRecord</span>(r, count); }
+            );
+            std::cout &lt;&lt; <span class="str">"Celkovo najdenych: "</span> &lt;&lt; count &lt;&lt; std::endl;</code></pre>
+
+  <pre><code>        } <span class="kw">else if</span> (choice == <span class="num">2</span>) {
+            <span class="cmt">// predWasAttacked – filter podľa cieľovej IP/masky a rozsahu portov</span>
+            std::string ip; <span class="type">int</span> prefix, portOd, portDo;
+            std::cin &gt;&gt; ip &gt;&gt; prefix &gt;&gt; portOd &gt;&gt; portDo;
+            <span class="type">IP</span> siet = IP::<span class="fn">fromString</span>(ip);
+            <span class="cmt">// siet, prefix, portOd, portDo zachytené hodnotou – kópie v lambda closure</span>
+            analyzer.<span class="fn">processData</span>(
+                data.<span class="fn">begin</span>(), data.<span class="fn">end</span>(),
+                [siet, prefix, portOd, portDo](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) {
+                    <span class="kw">return</span> r.dstIp.<span class="fn">isInSubnet</span>(siet, prefix) &amp;&amp;
+                           r.dstPort &gt;= portOd &amp;&amp; r.dstPort &lt;= portDo;
+                },
+                [&amp;count](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) { <span class="fn">printRecord</span>(r, count); }
+            );</code></pre>
+
+  <pre><code>        } <span class="kw">else if</span> (choice == <span class="num">3</span>) {
+            <span class="cmt">// predAttackedSize – filter podľa počtu bajtov</span>
+            uint64_t minBajtov, maxBajtov;
+            std::cin &gt;&gt; minBajtov &gt;&gt; maxBajtov;
+            analyzer.<span class="fn">processData</span>(
+                data.<span class="fn">begin</span>(), data.<span class="fn">end</span>(),
+                [minBajtov, maxBajtov](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) {
+                    <span class="kw">return</span> r.bytes &gt;= minBajtov &amp;&amp; r.bytes &lt;= maxBajtov;
+                },
+                [&amp;count](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) { <span class="fn">printRecord</span>(r, count); }
+            );
+        }
+    }
+}</code></pre>
+  <div class="box box-ok">Vo všetkých troch prípadoch: iterátory <code>data.begin()</code>/<code>data.end()</code> sú <code>ExplicitSequenceIterator</code> — prechádza reťazou <code>next</code> pointerov. Procesor je vždy rovnaký — len predikát sa mení.</div>
+
+  <!-- PRINTCURRENTPOSITION -->
+  <h3>printCurrentPosition() – riadky 185–232</h3>
+  <pre><code><span class="kw">void</span> <span class="fn">printCurrentPosition</span>(<span class="kw">const</span> <span class="type">IpHierarchyIterator</span>&amp; it) {
+    <span class="type">IpHierarchyNode</span>* cur = it.<span class="fn">current</span>();
+
+    <span class="kw">if</span> (cur == <span class="kw">nullptr</span>) { ...<span class="kw">return</span>; }
+    <span class="kw">if</span> (cur-><span class="fn">isRoot</span>()) {
+        std::cout &lt;&lt; <span class="str">"Ste v koreni - zahrnate vsetky IP adresy"</span>;
+        <span class="kw">return</span>;
+    }</code></pre>
+
+  <pre><code>    <span class="cmt">// Zozbieraj cestu od cur po koreň – ideme NAHOR cez parent pointre</span>
+    <span class="type">int</span> cesta[<span class="num">4</span>];
+    <span class="type">int</span> dlzka = <span class="num">0</span>;
+    <span class="type">IpHierarchyNode</span>* tmp = cur;
+    <span class="kw">while</span> (tmp != <span class="kw">nullptr</span> &amp;&amp; !tmp-><span class="fn">isRoot</span>()) {
+        cesta[dlzka++] = tmp->octetValue;  <span class="cmt">// ukladáme odzadu: [165, 84, 32, 147]</span>
+        tmp = tmp->parent;
+    }</code></pre>
+  <div class="step-box">
+    <div class="label">Pre uzol 147→32→84→165 (level=4):</div>
+    iter 1: cesta[0]=165, tmp=node84<br>
+    iter 2: cesta[1]=84,  tmp=node32<br>
+    iter 3: cesta[2]=32,  tmp=node147<br>
+    iter 4: cesta[3]=147, tmp=koreň → isRoot()=true → stop<br>
+    dlzka=4
+  </div>
+
+  <pre><code>    <span class="cmt">// Výpis od konca poľa (správne poradie)</span>
+    std::cout &lt;&lt; <span class="str">"Aktualna IP adresa: "</span>;
+    <span class="kw">for</span> (<span class="type">int</span> i = dlzka - <span class="num">1</span>; i &gt;= <span class="num">0</span>; i--) {
+        <span class="kw">if</span> (i &lt; dlzka - <span class="num">1</span>) std::cout &lt;&lt; <span class="str">"."</span>;
+        std::cout &lt;&lt; cesta[i];   <span class="cmt">// i=3→147, i=2→32, i=1→84, i=0→165</span>
+    }
+    <span class="kw">for</span> (<span class="type">int</span> i = dlzka; i &lt; <span class="num">4</span>; i++) std::cout &lt;&lt; <span class="str">".*"</span>;
+    <span class="cmt">// Ak sme na level=2 (dlzka=2): vypíše "147.32.*.*"</span></code></pre>
+
+  <pre><code>    <span class="cmt">// Výpis dostupných synov (len ak nie sme v liste)</span>
+    <span class="kw">if</span> (!cur-><span class="fn">isLeaf</span>()) {
+        std::cout &lt;&lt; <span class="str">"Dostupni synovia: "</span>;
+        <span class="kw">bool</span> prvy = <span class="kw">true</span>;
+        <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">256</span>; i++) {
+            <span class="kw">auto</span>* b = cur->children.<span class="fn">access</span>(i);  <span class="cmt">// O(1) – slot č. i</span>
+            <span class="kw">if</span> (b &amp;&amp; b->data) {
+                <span class="kw">if</span> (!prvy) std::cout &lt;&lt; <span class="str">", "</span>;
+                std::cout &lt;&lt; i;
+                prvy = <span class="kw">false</span>;
+            }
+        }
+    } <span class="kw">else</span> {
+        std::cout &lt;&lt; <span class="str">"Toto je list, pocet zaznamov: "</span> &lt;&lt; cur->records.<span class="fn">size</span>();
+    }
+}</code></pre>
+
+  <!-- RUNLEVEL2 -->
+  <h3>runLevel2() – riadky 234–338</h3>
+  <pre><code><span class="kw">void</span> <span class="fn">runLevel2</span>(<span class="type">IpHierarchy</span>&amp; hierarchy) {
+    <span class="type">DataAnalyzer</span> analyzer;
+    <span class="type">IpHierarchyIterator</span> iterator(hierarchy.<span class="fn">root</span>());
+    <span class="cmt">// iterator drží pointer na aktuálny uzol, začíname v koreni</span>
+    <span class="type">int</span> choice = -<span class="num">1</span>;
+
+    <span class="kw">while</span> (choice != <span class="num">0</span>) {
+        <span class="fn">printCurrentPosition</span>(iterator);
+
+        <span class="kw">if</span> (choice == <span class="num">1</span>) {
+            <span class="kw">if</span> (!iterator.<span class="fn">moveUp</span>())
+                std::cout &lt;&lt; <span class="str">"Nie je mozne ist vyssie, sme uz v koreni."</span>;
+            <span class="cmt">// moveUp() vráti false ak sme v koreni</span>
+
+        } <span class="kw">else if</span> (choice == <span class="num">2</span>) {
+            <span class="kw">if</span> (iterator.<span class="fn">current</span>()-><span class="fn">isLeaf</span>()) {
+                std::cout &lt;&lt; <span class="str">"Sme v liste, nemame ziadnych synov."</span>;
+            } <span class="kw">else</span> {
+                <span class="type">int</span> hodnota;
+                std::cin &gt;&gt; hodnota;
+                <span class="kw">if</span> (!iterator.<span class="fn">moveToChild</span>((uint8_t)hodnota))
+                    std::cout &lt;&lt; <span class="str">"Syn s takou hodnotou neexistuje."</span>;
+                <span class="cmt">// moveToChild() vráti false ak slot je nullptr</span>
+            }
+
+        } <span class="kw">else if</span> (choice == <span class="num">3</span>) {
+            <span class="cmt">// Filtrovanie podstromu – rovnaké predikáty ako Level1</span>
+            <span class="type">int</span> volbaPred; std::cin &gt;&gt; volbaPred;
+            <span class="type">int</span> count = <span class="num">0</span>;
+            <span class="type">IpRecordIterator</span> zaciatok(iterator.<span class="fn">current</span>());
+            <span class="cmt">// zaciatok = kombinovaný iterátor cez celý podstrom od current</span>
+            <span class="type">IpRecordIterator</span> koniec;
+            <span class="cmt">// koniec = default konštruktor = null iterator (sentinel)</span>
+            <span class="cmt">// processData porovnáva: zaciatok != koniec → operátor!=</span>
+
+            <span class="cmt">// [predikát podľa volbaPred — rovnaká logika ako Level1]</span>
+            analyzer.<span class="fn">processData</span>(zaciatok, koniec, predikát,
+                [&amp;count](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) { <span class="fn">printRecord</span>(r, count); }
+            );
+            std::cout &lt;&lt; <span class="str">"Najdenych v podstrome: "</span> &lt;&lt; count;
+        }
+    }
+}</code></pre>
+  <div class="box box-accent"><code>IpRecordIterator zaciatok(iterator.current())</code> — vytvorí iterátor začínajúci v aktuálnom uzle. <code>IpRecordIterator koniec</code> — defaultný konštruktor nastaví <code>nodeIt_</code> na null. Keď <code>zaciatok</code> dôjde na koniec podstromu, jeho <code>nodeIt_</code> sa tiež stane null → <code>zaciatok == koniec</code> → smyčka skončí.</div>
+
+  <!-- RUNLEVEL3 -->
+  <h3>runLevel3() – riadky 340–373</h3>
+  <pre><code><span class="kw">void</span> <span class="fn">runLevel3</span>(<span class="type">FlowSortedTable</span>&amp; table) {
+    <span class="type">int</span> choice = -<span class="num">1</span>;
+    <span class="kw">while</span> (choice != <span class="num">0</span>) {
+        <span class="kw">if</span> (choice == <span class="num">1</span>) {
+            std::string ip;
+            std::cin &gt;&gt; ip;
+
+            std::string key = IP::<span class="fn">fromString</span>(ip).<span class="fn">toString</span>();
+            <span class="cmt">// Normalizácia: "109.74.055.27" → fromString → toString → "109.74.55.27"</span>
+            <span class="cmt">// Zaručí rovnaký formát ako pri vkladaní (insertFlow volá tiež toString)</span>
+
+            <span class="type">FlowList</span>** listPtr = <span class="kw">nullptr</span>;
+            <span class="kw">if</span> (table.<span class="fn">tryFind</span>(key, listPtr)) {
+                <span class="cmt">// tryFind: binárne vyhľadávanie, max 15 porovnaní</span>
+                <span class="cmt">// listPtr → ukazuje na hodnotu v tabuľkovom slote</span>
+                <span class="type">int</span> count = <span class="num">0</span>;
+                <span class="kw">auto</span>* block = (*listPtr)-><span class="fn">accessFirst</span>();
+                <span class="cmt">// *listPtr je FlowList* → accessFirst() = prvý blok zoznamu</span>
+                <span class="kw">while</span> (block) {
+                    <span class="fn">printRecord</span>(*block->data, count);
+                    <span class="cmt">// block->data je const FlowRecord* → * dereferencuje na FlowRecord</span>
+                    block = (*listPtr)-><span class="fn">accessNext</span>(*block);
+                }
+                std::cout &lt;&lt; <span class="str">"Celkovo najdenych: "</span> &lt;&lt; count;
+            } <span class="kw">else</span> {
+                std::cout &lt;&lt; <span class="str">"Ziadne zaznamy pre IP adresu "</span> &lt;&lt; key;
+            }
+        }
+    }
+}</code></pre>
+
+  <!-- RUNLEVEL4 -->
+  <h3>runLevel4() – riadky 378–533</h3>
+  <pre><code><span class="kw">void</span> <span class="fn">runLevel4</span>(<span class="type">IpHierarchy</span>&amp; hierarchy) {
+    <span class="type">DataAnalyzer</span> analyzer;
+    <span class="type">IpHierarchyIterator</span> iterator(hierarchy.<span class="fn">root</span>());
+    <span class="type">int</span> choice = -<span class="num">1</span>;</code></pre>
+
+  <pre><code>        <span class="cmt">// choice 1 a 2: navigácia – identická s runLevel2</span>
+        <span class="kw">if</span> (choice == <span class="num">1</span>) iterator.<span class="fn">moveUp</span>();
+        <span class="kw">else if</span> (choice == <span class="num">2</span>) iterator.<span class="fn">moveToChild</span>((uint8_t)hodnota);</code></pre>
+
+  <pre><code>        } <span class="kw">else if</span> (choice == <span class="num">3</span>) {
+            <span class="cmt">// ── Krok 1: výber predikátu ───────────────────────────────────</span>
+            <span class="type">int</span> volbaPred; std::cin &gt;&gt; volbaPred;
+
+            std::<span class="type">function</span>&lt;<span class="kw">bool</span>(<span class="kw">const</span> <span class="type">FlowRecord</span>&amp;)&gt; predicate;
+            <span class="cmt">// std::function nutný – priradzujeme rôzne lambdy v rôznych vetvách</span>
+            <span class="cmt">// (každá lambda má unikátny typ, auto by nefungovalo)</span>
+
+            <span class="kw">if</span> (volbaPred == <span class="num">2</span>) {
+                <span class="cmt">// načítaj IP, prefix, porty</span>
+                predicate = [siet, prefix, portOd, portDo](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) {
+                    <span class="kw">return</span> r.dstIp.<span class="fn">isInSubnet</span>(siet, prefix) &amp;&amp;
+                           r.dstPort &gt;= portOd &amp;&amp; r.dstPort &lt;= portDo;
+                };
+            } <span class="kw">else if</span> (volbaPred == <span class="num">3</span>) {
+                <span class="cmt">// načítaj min, max bajtov</span>
+                predicate = [minB, maxB](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) {
+                    <span class="kw">return</span> r.bytes &gt;= minB &amp;&amp; r.bytes &lt;= maxB;
+                };
+            } <span class="kw">else</span> {
+                predicate = [](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp;) { <span class="kw">return true</span>; };
+            }</code></pre>
+
+  <pre><code>            <span class="cmt">// ── Krok 2: filter + kópia do ImplicitSequence ────────────────</span>
+            <span class="type">ImplicitSequence</span>&lt;<span class="type">FlowRecord</span>&gt; filtered;
+            <span class="type">IpRecordIterator</span> zaciatok(iterator.<span class="fn">current</span>());
+            <span class="type">IpRecordIterator</span> koniec;
+
+            analyzer.<span class="fn">processData</span>(zaciatok, koniec, predicate,
+                [&amp;filtered](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) {
+                    filtered.<span class="fn">emplaceLast</span>().data = r;
+                    <span class="cmt">// r je const FlowRecord& → priradením urobíme KÓPIU hodnoty</span>
+                    <span class="cmt">// (nie pointer) – QuickSort bude triediť nezávisle od originálu</span>
+                }
+            );
+
+            <span class="kw">if</span> (filtered.<span class="fn">isEmpty</span>()) {
+                std::cout &lt;&lt; <span class="str">"Ziadne zaznamy nezodpovedaju predikatu."</span>;
+                <span class="kw">continue</span>;  <span class="cmt">// skoč na začiatok while smyčky</span>
+            }
+            std::cout &lt;&lt; <span class="str">"Filtrovanych zaznamov: "</span> &lt;&lt; filtered.<span class="fn">size</span>();</code></pre>
+
+  <pre><code>            <span class="cmt">// ── Krok 3: výber komparátora a triedenie ─────────────────────</span>
+            <span class="type">int</span> volbaKomp; std::cin &gt;&gt; volbaKomp;
+
+            ds::adt::<span class="type">QuickSort</span>&lt;<span class="type">FlowRecord</span>&gt; sorter;
+            <span class="cmt">// sorter je lokálna premenná – je to len "nosič" metódy sort()</span>
+
+            <span class="kw">if</span> (volbaKomp == <span class="num">1</span>) {
+                <span class="kw">auto</span> compareDurations = [](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; a, <span class="kw">const</span> <span class="type">FlowRecord</span>&amp; b) {
+                    <span class="kw">return</span> a.duration &lt; b.duration;
+                };
+                sorter.<span class="fn">sort</span>(filtered, compareDurations);
+                <span class="cmt">// sort() triedi filtered IN-PLACE pomocou QuickSort</span>
+                <span class="cmt">// compareDurations: vráti true ak a má byť pred b (vzostupne)</span>
+
+            } <span class="kw">else if</span> (volbaKomp == <span class="num">2</span>) {
+                <span class="kw">auto</span> comparePackets = [](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; a, <span class="kw">const</span> <span class="type">FlowRecord</span>&amp; b) {
+                    <span class="kw">if</span> (a.packets != b.packets) <span class="kw">return</span> a.packets &lt; b.packets;
+                    <span class="kw">return</span> a.packetsRev &lt; b.packetsRev;  <span class="cmt">// tiebreaker</span>
+                };
+                sorter.<span class="fn">sort</span>(filtered, comparePackets);
+            }</code></pre>
+
+  <pre><code>            <span class="cmt">// ── Krok 4: výpis utriedených záznamov ────────────────────────</span>
+            <span class="type">int</span> count = <span class="num">0</span>;
+            analyzer.<span class="fn">processData</span>(
+                filtered.<span class="fn">begin</span>(), filtered.<span class="fn">end</span>(),
+                <span class="cmt">// filtered.begin()/end() = ImplicitSequenceIterator (pointer aritmetika)</span>
+                [](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp;) { <span class="kw">return true</span>; },
+                [&amp;count](<span class="kw">const</span> <span class="type">FlowRecord</span>&amp; r) {
+                    count++;
+                    std::cout &lt;&lt; r.srcIp.<span class="fn">toString</span>() &lt;&lt; <span class="str">" -> "</span> &lt;&lt; r.dstIp.<span class="fn">toString</span>()
+                              &lt;&lt; <span class="str">"  trvanie: "</span> &lt;&lt; std::fixed &lt;&lt; std::setprecision(<span class="num">3</span>)
+                              &lt;&lt; r.duration &lt;&lt; <span class="str">"s"</span> &lt;&lt; std::endl;
+                }
+            );
+            std::cout &lt;&lt; <span class="str">"Celkovo: "</span> &lt;&lt; count;
+        }
+}</code></pre>
+  <div class="tip"><code>std::fixed &lt;&lt; std::setprecision(3)</code> — formátovacie manipulátory z <code>&lt;iomanip&gt;</code>. <code>std::fixed</code> vypíše číslo s pevným počtom desatinných miest, <code>setprecision(3)</code> nastaví 3 miesta. Napr. <code>0.123456</code> → <code>0.123</code>.</div>
+
+  <!-- MAIN -->
+  <h3>main() – riadky 535–575</h3>
+  <pre><code><span class="type">int</span> <span class="fn">main</span>() {
+    <span class="type">SinglyLinkedSequence</span>&lt;<span class="type">FlowRecord</span>&gt; data;
+    <span class="type">IpHierarchy</span>                       hierarchy;
+    <span class="type">FlowSortedTable</span>                    flowTable;</code></pre>
+  <p>Tri lokálne premenné na zásobníku (stack). Poradie deklarácie je kľúčové — C++ destruktuje lokálne premenné v <strong>opačnom poradí</strong>:</p>
+  <div class="step-box">
+    Deklarácia: data → hierarchy → flowTable
+    <br>
+    Deštrukcia: ~FlowSortedTable() → ~IpHierarchy() → ~SinglyLinkedSequence()
+    <br><br>
+    <span class="new">Prečo je toto bezpečné:</span>
+    <br>
+    ~FlowSortedTable maže FlowList* — nepotrebuje data ani hierarchy
+    <br>
+    ~IpHierarchy maže uzly — nepotrebuje data
+    <br>
+    ~SinglyLinkedSequence maže FlowRecord objekty — robí to posledná, keď na ne nikto neukazuje
+  </div>
+
+  <pre><code>    <span class="fn">loadData</span>(data, hierarchy, flowTable);
+    <span class="cmt">// Po tomto volaní: data má ~160 000 záznamov,</span>
+    <span class="cmt">// hierarchy má trie s pointermi na ne,</span>
+    <span class="cmt">// flowTable má zoradenú tabuľku s pointermi na ne</span>
+
+    <span class="kw">if</span> (data.<span class="fn">isEmpty</span>()) {
+        std::cout &lt;&lt; <span class="str">"Ziadne data, program konci."</span>;
+        <span class="kw">return</span> <span class="num">1</span>;  <span class="cmt">// nenulový návratový kód = chyba</span>
+    }
+
+    <span class="type">int</span> choice = -<span class="num">1</span>;
+    <span class="kw">while</span> (choice != <span class="num">0</span>) {
+        <span class="cmt">// Vypíš hlavné menu</span>
+        <span class="kw">if</span>      (choice == <span class="num">1</span>) <span class="fn">runLevel1</span>(data);
+        <span class="kw">else if</span> (choice == <span class="num">2</span>) <span class="fn">runLevel2</span>(hierarchy);
+        <span class="kw">else if</span> (choice == <span class="num">3</span>) <span class="fn">runLevel3</span>(flowTable);
+        <span class="kw">else if</span> (choice == <span class="num">4</span>) <span class="fn">runLevel4</span>(hierarchy);
+        <span class="kw">else if</span> (choice != <span class="num">0</span>) std::cout &lt;&lt; <span class="str">"Neznama volba."</span>;
+    }
+
+    std::cout &lt;&lt; <span class="str">"Program skoncil."</span>;
+    <span class="kw">return</span> <span class="num">0</span>;
+    <span class="cmt">// Automatická deštrukcia: ~flowTable → ~hierarchy → ~data</span>
+}</code></pre>
+  <div class="box box-ok">
+    <strong>Prečo Level2 a Level4 dostávajú <code>hierarchy</code> a nie <code>data</code>?</strong><br>
+    Level2 a Level4 navigujú po hierarchii — potrebujú <code>IpHierarchy</code>. Level1 iteruje flat zoznam — potrebuje <code>data</code>. Level3 vyhľadáva podľa IP — potrebuje <code>flowTable</code>. Každá funkcia dostane len to, čo naozaj potrebuje.
   </div>
 
   <!-- ===================== KONTROLA ORIGINALITY ===================== -->
